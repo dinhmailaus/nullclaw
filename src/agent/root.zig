@@ -100,7 +100,11 @@ pub const Agent = struct {
         // Build tool specs for function-calling APIs
         const specs = try allocator.alloc(ToolSpec, tools.len);
         for (tools, 0..) |t, i| {
-            specs[i] = t.spec();
+            specs[i] = .{
+                .name = t.name(),
+                .description = t.description(),
+                .parameters_json = t.parametersJson(),
+            };
         }
 
         return .{

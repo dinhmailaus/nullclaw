@@ -686,27 +686,66 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
         }
         std.debug.print("\n", .{});
     }
-    std.debug.print("  Polling for messages... (Ctrl+C to stop)\n\n", .{});
 
     var tg = yc.channels.telegram.TelegramChannel.init(allocator, telegram_config.bot_token, allowed);
 
-    // Build system prompt from workspace SOUL.md and identity files
+    // Create tools (for system prompt and tool calling)
     const tools = yc.tools.allTools(allocator, config.workspace_dir, .{
         .http_enabled = config.http_request.enabled,
         .browser_enabled = config.browser.enabled,
     }) catch &.{};
     defer if (tools.len > 0) allocator.free(tools);
 
-    const system_prompt = yc.agent.prompt.buildSystemPrompt(allocator, .{
-        .workspace_dir = config.workspace_dir,
-        .model_name = model,
-        .tools = tools,
-    }) catch try allocator.dupe(u8, "You are nullclaw, a helpful AI assistant. Be concise.");
-    defer allocator.free(system_prompt);
+    // Create optional memory backend (don't fail if unavailable)
+    var mem_opt: ?yc.memory.Memory = null;
+    const db_path = std.fs.path.joinZ(allocator, &.{ config.workspace_dir, "memory.db" }) catch null;
+    defer if (db_path) |p| allocator.free(p);
+    if (db_path) |p| {
+        if (yc.memory.createMemory(allocator, config.memory.backend, p)) |mem| {
+            mem_opt = mem;
+        } else |_| {}
+    }
 
-    std.debug.print("  System prompt: {d} chars\n\n", .{system_prompt.len});
+    // Create noop observer
+    var noop_obs = yc.observability.NoopObserver{};
+    const obs = noop_obs.observer();
 
-    // Bot loop: poll → think → reply
+    // Create provider vtable — concrete struct must stay alive for the loop.
+    // Use a tagged union so the right type lives on the stack.
+    const ProviderHolder = union(enum) {
+        openrouter: yc.providers.openrouter.OpenRouterProvider,
+        anthropic: yc.providers.anthropic.AnthropicProvider,
+        openai: yc.providers.openai.OpenAiProvider,
+        gemini: yc.providers.gemini.GeminiProvider,
+        ollama: yc.providers.ollama.OllamaProvider,
+    };
+
+    var holder: ProviderHolder = if (std.mem.eql(u8, config.default_provider, "anthropic"))
+        .{ .anthropic = yc.providers.anthropic.AnthropicProvider.init(allocator, config.api_key, null) }
+    else if (std.mem.eql(u8, config.default_provider, "openai"))
+        .{ .openai = yc.providers.openai.OpenAiProvider.init(allocator, config.api_key) }
+    else if (std.mem.eql(u8, config.default_provider, "gemini") or
+        std.mem.eql(u8, config.default_provider, "google"))
+        .{ .gemini = yc.providers.gemini.GeminiProvider.init(allocator, config.api_key) }
+    else if (std.mem.eql(u8, config.default_provider, "ollama"))
+        .{ .ollama = yc.providers.ollama.OllamaProvider.init(allocator, null) }
+    else
+        // Default: OpenRouter (also handles all other provider names)
+        .{ .openrouter = yc.providers.openrouter.OpenRouterProvider.init(allocator, config.api_key) };
+
+    const provider_i: yc.providers.Provider = switch (holder) {
+        .openrouter => |*p| p.provider(),
+        .anthropic => |*p| p.provider(),
+        .openai => |*p| p.provider(),
+        .gemini => |*p| p.provider(),
+        .ollama => |*p| p.provider(),
+    };
+
+    std.debug.print("  Tools: {d} loaded\n", .{tools.len});
+    std.debug.print("  Memory: {s}\n", .{if (mem_opt != null) "enabled" else "disabled"});
+    std.debug.print("  Polling for messages... (Ctrl+C to stop)\n\n", .{});
+
+    // Bot loop: poll → full agent loop (tool calling) → reply
     while (true) {
         const messages = tg.pollUpdates(allocator) catch |err| {
             std.debug.print("Poll error: {}\n", .{err});
@@ -717,16 +756,25 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
         for (messages) |msg| {
             std.debug.print("[{s}] {s}: {s}\n", .{ msg.channel, msg.id, msg.content });
 
-            // Route to configured provider with SOUL.md system prompt
-            const reply = yc.providers.completeWithSystem(allocator, &config, system_prompt, msg.content) catch |err| {
-                std.debug.print("  LLM error: {}\n", .{err});
+            // Run full agent loop: builds system prompt, executes tool calls, etc.
+            const reply = yc.agent.processMessage(
+                allocator,
+                &config,
+                provider_i,
+                tools,
+                mem_opt,
+                obs,
+                msg.content,
+            ) catch |err| {
+                std.debug.print("  Agent error: {}\n", .{err});
                 tg.sendMessage(msg.sender, "Sorry, I encountered an error.") catch {};
                 continue;
             };
+            defer allocator.free(reply);
 
             std.debug.print("  -> {s}\n", .{reply});
 
-            // Reply on telegram (sender contains chat_id)
+            // Reply on telegram (sender contains chat_id); handles [IMAGE:path] markers
             tg.sendMessage(msg.sender, reply) catch |err| {
                 std.debug.print("  Send error: {}\n", .{err});
             };
