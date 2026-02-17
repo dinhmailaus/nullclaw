@@ -34,7 +34,7 @@ pub const ScreenshotTool = struct {
     }
 
     fn vtableDesc(_: *anyopaque) []const u8 {
-        return "Capture a screenshot of the current screen. Returns the file path.";
+        return "Capture a screenshot of the current screen. Returns [IMAGE:path] marker — include it verbatim in your response to send the image to the user.";
     }
 
     fn vtableParams(_: *anyopaque) []const u8 {
@@ -75,7 +75,9 @@ pub const ScreenshotTool = struct {
         };
 
         if (term.Exited == 0) {
-            const msg = try std.fmt.allocPrint(allocator, "Screenshot saved to: {s}/{s}", .{ self.workspace_dir, filename });
+            const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ self.workspace_dir, filename });
+            defer allocator.free(full_path);
+            const msg = try std.fmt.allocPrint(allocator, "[IMAGE:{s}]", .{full_path});
             return ToolResult{ .success = true, .output = msg };
         } else {
             const err_msg = try std.fmt.allocPrint(allocator, "Screenshot command failed: {s}", .{if (stderr.len > 0) stderr else "unknown error"});
