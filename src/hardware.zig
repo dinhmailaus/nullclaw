@@ -479,8 +479,8 @@ fn runLinuxMonitor(monitor: *HotplugMonitor) void {
         &.{ "udevadm", "monitor", "--udev", "--subsystem-match=usb", "--subsystem-match=tty" },
         monitor.allocator,
     );
-    child.stdout_behavior = .pipe;
-    child.stderr_behavior = .pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
     child.spawn() catch return;
     defer {
         _ = child.kill() catch {};

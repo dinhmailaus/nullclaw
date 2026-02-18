@@ -541,10 +541,11 @@ pub const RpiGpioPeripheral = struct {
             return Peripheral.PeripheralError.UnsupportedOperation;
         }
         // Check that /sys/class/gpio exists (Linux sysfs GPIO interface)
-        std.fs.openDirAbsolute("/sys/class/gpio", .{}) catch {
+        var gpio_dir = std.fs.openDirAbsolute("/sys/class/gpio", .{}) catch {
             self.connected = false;
             return Peripheral.PeripheralError.DeviceNotFound;
         };
+        gpio_dir.close();
         self.connected = true;
     }
 

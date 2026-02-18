@@ -153,8 +153,8 @@ test "detect available returns struct" {
         try std.testing.expect(!avail.firejail);
         try std.testing.expect(!avail.bubblewrap);
     }
-    // docker.isAvailable() returns true unconditionally (runtime check would need spawn)
-    try std.testing.expect(avail.docker);
+    // Docker availability is runtime-dependent (not available on all CI machines)
+    _ = avail.docker;
 }
 
 test "create sandbox with none returns noop" {

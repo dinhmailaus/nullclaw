@@ -163,7 +163,7 @@ pub const SpiTool = struct {
         const SPI_IOC_MESSAGE_1: u32 = 0x40206B00;
 
         // Open SPI device
-        const fd = std.posix.open(device.ptr, .{ .ACCMODE = .RDWR }, 0) catch |err| {
+        const fd = std.posix.open(device, .{ .ACCMODE = .RDWR }, 0) catch |err| {
             const msg = try std.fmt.allocPrint(allocator, "Failed to open SPI device '{s}': {}", .{ device, err });
             return ToolResult{ .success = false, .output = "", .error_msg = msg };
         };

@@ -172,7 +172,7 @@ pub const I2cTool = struct {
         var addr: u7 = I2C_ADDR_MIN;
         while (addr <= I2C_ADDR_MAX) : (addr += 1) {
             // Set slave address via ioctl
-            const rc = std.os.linux.syscall(.ioctl, .{ @as(usize, @intCast(fd)), @as(usize, I2C_SLAVE), @as(usize, addr) });
+            const rc = std.os.linux.syscall3(.ioctl, @as(usize, @intCast(fd)), @as(usize, I2C_SLAVE), @as(usize, addr));
             const signed_rc: isize = @bitCast(rc);
             if (signed_rc < 0) continue;
 
