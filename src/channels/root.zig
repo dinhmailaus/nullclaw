@@ -29,6 +29,12 @@ pub const ChannelMessage = struct {
     timestamp: u64,
     /// Where to send a reply (e.g., DM sender vs channel name in IRC, thread ID in Telegram).
     reply_target: ?[]const u8 = null,
+    /// Platform message ID (e.g. Telegram message_id for reply-to).
+    message_id: ?i64 = null,
+    /// Sender's first name (for personalized greetings).
+    first_name: ?[]const u8 = null,
+    /// Whether the message came from a group chat.
+    is_group: bool = false,
 
     pub fn deinit(self: *const ChannelMessage, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -36,6 +42,7 @@ pub const ChannelMessage = struct {
         allocator.free(self.content);
         allocator.free(self.channel);
         if (self.reply_target) |rt| allocator.free(rt);
+        if (self.first_name) |fn_| allocator.free(fn_);
     }
 };
 

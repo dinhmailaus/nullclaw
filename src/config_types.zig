@@ -130,6 +130,8 @@ pub const CronConfig = struct {
 pub const TelegramConfig = struct {
     bot_token: []const u8,
     allowed_users: []const []const u8 = &.{},
+    /// Use reply-to in private (1:1) chats. Groups always use reply-to.
+    reply_in_private: bool = true,
 };
 
 pub const DiscordConfig = struct {

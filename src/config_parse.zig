@@ -671,6 +671,9 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                         if (tg.object.get("allowed_users")) |v| {
                             if (v == .array) tg_cfg.allowed_users = try parseStringArray(self.allocator, v.array);
                         }
+                        if (tg.object.get("reply_in_private")) |v| {
+                            if (v == .bool) tg_cfg.reply_in_private = v.bool;
+                        }
                     }
                 }
             }

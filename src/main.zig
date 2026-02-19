@@ -773,11 +773,19 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
 
     std.debug.print("  Tools: {d} loaded\n", .{tools.len});
     std.debug.print("  Memory: {s}\n", .{if (mem_opt != null) "enabled" else "disabled"});
+
+    // Register bot commands in Telegram's "/" menu
+    tg.setMyCommands();
+
+    // Skip messages accumulated while bot was offline
+    tg.dropPendingUpdates();
+
     std.debug.print("  Polling for messages... (Ctrl+C to stop)\n\n", .{});
 
     var session_mgr = yc.session.SessionManager.init(allocator, &config, provider_i, tools, mem_opt, obs);
     defer session_mgr.deinit();
 
+    var typing = yc.channels.telegram.TypingIndicator.init(&tg);
     var evict_counter: u32 = 0;
 
     // Bot loop: poll → full agent loop (tool calling) → reply
@@ -791,21 +799,41 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
         for (messages) |msg| {
             std.debug.print("[{s}] {s}: {s}\n", .{ msg.channel, msg.id, msg.content });
 
+            // Handle /start command (Telegram-specific greeting, not sent to LLM)
+            const trimmed_content = std.mem.trim(u8, msg.content, " \t\r\n");
+            if (std.mem.eql(u8, trimmed_content, "/start")) {
+                var greeting_buf: [512]u8 = undefined;
+                const name = msg.first_name orelse msg.id;
+                const greeting = std.fmt.bufPrint(&greeting_buf, "Hello, {s}! I'm nullClaw.\n\nModel: {s}\nType /help for available commands.", .{ name, model }) catch "Hello! I'm nullClaw. Type /help for commands.";
+                tg.sendMessageWithReply(msg.sender, greeting, msg.message_id) catch |err| log.err("failed to send /start reply: {}", .{err});
+                continue;
+            }
+
+            // Determine reply-to: always in groups, configurable in private chats
+            const use_reply_to = msg.is_group or telegram_config.reply_in_private;
+            const reply_to_id: ?i64 = if (use_reply_to) msg.message_id else null;
+
             // Session key: "telegram:{chat_id}"
             var key_buf: [128]u8 = undefined;
             const session_key = std.fmt.bufPrint(&key_buf, "telegram:{s}", .{msg.sender}) catch msg.sender;
 
+            // Start periodic typing indicator while LLM is thinking
+            typing.start(msg.sender);
+
             const reply = session_mgr.processMessage(session_key, msg.content) catch |err| {
+                typing.stop();
                 std.debug.print("  Agent error: {}\n", .{err});
-                tg.sendMessage(msg.sender, "Sorry, I encountered an error.") catch |send_err| log.err("failed to send error reply: {}", .{send_err});
+                tg.sendMessageWithReply(msg.sender, "Sorry, I encountered an error.", reply_to_id) catch |send_err| log.err("failed to send error reply: {}", .{send_err});
                 continue;
             };
             defer allocator.free(reply);
 
+            typing.stop();
+
             std.debug.print("  -> {s}\n", .{reply});
 
-            // Reply on telegram (sender contains chat_id); handles [IMAGE:path] markers
-            tg.sendMessage(msg.sender, reply) catch |err| {
+            // Reply on telegram; handles [IMAGE:path] markers + split
+            tg.sendMessageWithReply(msg.sender, reply, reply_to_id) catch |err| {
                 std.debug.print("  Send error: {}\n", .{err});
             };
         }
@@ -816,6 +844,7 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
                 allocator.free(msg.id);
                 allocator.free(msg.sender);
                 allocator.free(msg.content);
+                if (msg.first_name) |fn_| allocator.free(fn_);
             }
             allocator.free(messages);
         }

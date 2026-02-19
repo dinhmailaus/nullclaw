@@ -285,6 +285,52 @@ pub const TelegramChannel = struct {
         return true;
     }
 
+    /// Register bot commands with Telegram so they appear in the "/" menu.
+    pub fn setMyCommands(self: *TelegramChannel) void {
+        var url_buf: [512]u8 = undefined;
+        const url = self.apiUrl(&url_buf, "setMyCommands") catch return;
+
+        const body =
+            \\{"commands":[
+            \\{"command":"start","description":"Start a conversation"},
+            \\{"command":"new","description":"Clear history, start fresh"},
+            \\{"command":"help","description":"Show available commands"},
+            \\{"command":"status","description":"Show model and stats"},
+            \\{"command":"model","description":"Switch model"}
+            \\]}
+        ;
+
+        const resp = root.http_util.curlPost(self.allocator, url, body, &.{}) catch |err| {
+            log.warn("setMyCommands failed: {}", .{err});
+            return;
+        };
+        self.allocator.free(resp);
+    }
+
+    /// Skip all pending updates accumulated while bot was offline.
+    /// Fetches with offset=-1 to get only the latest update, then advances past it.
+    pub fn dropPendingUpdates(self: *TelegramChannel) void {
+        var url_buf: [512]u8 = undefined;
+        const url = self.apiUrl(&url_buf, "getUpdates") catch return;
+
+        const body = "{\"offset\":-1,\"timeout\":0}";
+        const resp_body = root.http_util.curlPost(self.allocator, url, body, &.{}) catch return;
+        defer self.allocator.free(resp_body);
+
+        // Parse to extract the latest update_id and advance past it
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, resp_body, .{}) catch return;
+        defer parsed.deinit();
+
+        const result_array = (parsed.value.object.get("result") orelse return).array.items;
+        for (result_array) |update| {
+            if (update.object.get("update_id")) |uid| {
+                if (uid == .integer) {
+                    self.last_update_id = uid.integer + 1;
+                }
+            }
+        }
+    }
+
     // ── Typing indicator ────────────────────────────────────────────
 
     /// Send a "typing" chat action. Best-effort: errors are ignored.
@@ -306,14 +352,14 @@ pub const TelegramChannel = struct {
     // ── HTML fallback ────────────────────────────────────────────────
 
     /// Send text with HTML parse_mode (converted from Markdown); on failure, retry as plain text.
-    fn sendWithMarkdownFallback(self: *TelegramChannel, chat_id: []const u8, text: []const u8) !void {
+    fn sendWithMarkdownFallback(self: *TelegramChannel, chat_id: []const u8, text: []const u8, reply_to: ?i64) !void {
         var url_buf: [512]u8 = undefined;
         const url = try self.apiUrl(&url_buf, "sendMessage");
 
         // Convert Markdown → Telegram HTML
         const html_text = markdownToTelegramHtml(self.allocator, text) catch {
             // Conversion failed — send as plain text
-            try self.sendChunkPlain(chat_id, text);
+            try self.sendChunkPlain(chat_id, text, reply_to);
             return;
         };
         defer self.allocator.free(html_text);
@@ -326,23 +372,32 @@ pub const TelegramChannel = struct {
         try html_body.appendSlice(self.allocator, chat_id);
         try html_body.appendSlice(self.allocator, ",\"text\":");
         try root.json_util.appendJsonString(&html_body, self.allocator, html_text);
-        try html_body.appendSlice(self.allocator, ",\"parse_mode\":\"HTML\"}");
+        try html_body.appendSlice(self.allocator, ",\"parse_mode\":\"HTML\"");
+        if (reply_to) |rid| {
+            var rid_buf: [32]u8 = undefined;
+            const rid_str = std.fmt.bufPrint(&rid_buf, "{d}", .{rid}) catch unreachable;
+            try html_body.appendSlice(self.allocator, ",\"reply_parameters\":{\"message_id\":");
+            try html_body.appendSlice(self.allocator, rid_str);
+            try html_body.appendSlice(self.allocator, "}");
+        }
+        try html_body.appendSlice(self.allocator, "}");
 
         const resp = root.http_util.curlPost(self.allocator, url, html_body.items, &.{}) catch {
             // Network error — fall through to plain send
-            try self.sendChunkPlain(chat_id, text);
+            try self.sendChunkPlain(chat_id, text, reply_to);
             return;
         };
+        defer self.allocator.free(resp);
 
         // Check if response indicates error (contains "error_code")
         if (std.mem.indexOf(u8, resp, "\"error_code\"") != null) {
             // HTML failed, retry as plain text
-            try self.sendChunkPlain(chat_id, text);
+            try self.sendChunkPlain(chat_id, text, reply_to);
             return;
         }
     }
 
-    fn sendChunkPlain(self: *TelegramChannel, chat_id: []const u8, text: []const u8) !void {
+    fn sendChunkPlain(self: *TelegramChannel, chat_id: []const u8, text: []const u8, reply_to: ?i64) !void {
         var url_buf: [512]u8 = undefined;
         const url = try self.apiUrl(&url_buf, "sendMessage");
 
@@ -353,6 +408,13 @@ pub const TelegramChannel = struct {
         try body_list.appendSlice(self.allocator, chat_id);
         try body_list.appendSlice(self.allocator, ",\"text\":");
         try root.json_util.appendJsonString(&body_list, self.allocator, text);
+        if (reply_to) |rid| {
+            var rid_buf: [32]u8 = undefined;
+            const rid_str = std.fmt.bufPrint(&rid_buf, "{d}", .{rid}) catch unreachable;
+            try body_list.appendSlice(self.allocator, ",\"reply_parameters\":{\"message_id\":");
+            try body_list.appendSlice(self.allocator, rid_str);
+            try body_list.appendSlice(self.allocator, "}");
+        }
         try body_list.appendSlice(self.allocator, "}");
 
         _ = try root.http_util.curlPost(self.allocator, url, body_list.items, &.{});
@@ -443,6 +505,11 @@ pub const TelegramChannel = struct {
     /// Parses attachment markers, sends typing indicator, uses smart splitting
     /// with Markdown fallback.
     pub fn sendMessage(self: *TelegramChannel, chat_id: []const u8, text: []const u8) !void {
+        return self.sendMessageWithReply(chat_id, text, null);
+    }
+
+    /// Send a message with optional reply-to, continuation markers, and delay between chunks.
+    pub fn sendMessageWithReply(self: *TelegramChannel, chat_id: []const u8, text: []const u8, reply_to: ?i64) !void {
         // Send typing indicator (best-effort)
         self.sendTypingIndicator(chat_id);
 
@@ -452,9 +519,40 @@ pub const TelegramChannel = struct {
 
         // Send remaining text (if any) with smart splitting
         if (parsed.remaining_text.len > 0) {
-            var it = smartSplitMessage(parsed.remaining_text, MAX_MESSAGE_LEN);
+            // Use slightly smaller limit when text will split, to leave room for markers
+            const needs_split = parsed.remaining_text.len > MAX_MESSAGE_LEN;
+            const split_limit = if (needs_split) MAX_MESSAGE_LEN - 12 else MAX_MESSAGE_LEN;
+
+            // Collect chunks
+            var chunks: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer chunks.deinit(self.allocator);
+            var it = smartSplitMessage(parsed.remaining_text, split_limit);
             while (it.next()) |chunk| {
-                try self.sendWithMarkdownFallback(chat_id, chunk);
+                try chunks.append(self.allocator, chunk);
+            }
+
+            var current_reply_to = reply_to;
+            for (chunks.items, 0..) |chunk, i| {
+                if (chunks.items.len > 1 and i < chunks.items.len - 1) {
+                    // Not the last chunk — append ⏬ to signal continuation
+                    var annotated: std.ArrayListUnmanaged(u8) = .empty;
+                    defer annotated.deinit(self.allocator);
+
+                    try annotated.appendSlice(self.allocator, chunk);
+                    try annotated.appendSlice(self.allocator, "\n\n\u{23EC}"); // ⏬
+
+                    try self.sendWithMarkdownFallback(chat_id, annotated.items, current_reply_to);
+                } else {
+                    try self.sendWithMarkdownFallback(chat_id, chunk, current_reply_to);
+                }
+
+                // Only reply-to the first chunk
+                current_reply_to = null;
+
+                // 100ms delay between chunks to avoid rate-limit / ordering issues
+                if (i < chunks.items.len - 1) {
+                    std.Thread.sleep(100 * std.time.ns_per_ms);
+                }
             }
         }
 
@@ -555,7 +653,15 @@ pub const TelegramChannel = struct {
             else
                 (user_id orelse "unknown");
 
-            // Get chat_id
+            // Extract first_name
+            const first_name_val = from_obj.object.get("first_name");
+            const first_name: ?[]const u8 = if (first_name_val) |fnv| (if (fnv == .string) fnv.string else null) else null;
+
+            // Extract message_id
+            const msg_id_val = message.object.get("message_id");
+            const msg_id: ?i64 = if (msg_id_val) |mv| (if (mv == .integer) mv.integer else null) else null;
+
+            // Get chat_id and chat type
             const chat_obj = message.object.get("chat") orelse continue;
             const chat_id_val = chat_obj.object.get("id") orelse continue;
             var chat_id_buf: [32]u8 = undefined;
@@ -565,6 +671,11 @@ pub const TelegramChannel = struct {
                 }
                 continue;
             };
+            const chat_type_val = chat_obj.object.get("type");
+            const is_group = if (chat_type_val) |tv|
+                (if (tv == .string) (!std.mem.eql(u8, tv.string, "private")) else false)
+            else
+                false;
 
             // Check for voice/audio messages and attempt transcription
             const content = blk_content: {
@@ -602,6 +713,9 @@ pub const TelegramChannel = struct {
                 .content = final_content,
                 .channel = "telegram",
                 .timestamp = root.nowEpochSecs(),
+                .message_id = msg_id,
+                .first_name = if (first_name) |fn_| try allocator.dupe(u8, fn_) else null,
+                .is_group = is_group,
             });
         }
 
