@@ -3,44 +3,26 @@ const root = @import("root.zig");
 const Tool = root.Tool;
 const ToolResult = root.ToolResult;
 const JsonObjectMap = root.JsonObjectMap;
-const isResolvedPathAllowed = @import("file_edit.zig").isResolvedPathAllowed;
+const isResolvedPathAllowed = @import("path_security.zig").isResolvedPathAllowed;
 
 /// Git operations tool for structured repository management.
 pub const GitTool = struct {
     workspace_dir: []const u8,
     allowed_paths: []const []const u8 = &.{},
 
-    const vtable = Tool.VTable{
-        .execute = &vtableExecute,
-        .name = &vtableName,
-        .description = &vtableDesc,
-        .parameters_json = &vtableParams,
-    };
+    pub const tool_name = "git_operations";
+    pub const tool_description = "Perform structured Git operations (status, diff, log, branch, commit, add, checkout, stash).";
+    pub const tool_params =
+        \\{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","checkout","stash"],"description":"Git operation to perform"},"message":{"type":"string","description":"Commit message (for commit)"},"paths":{"type":"string","description":"File paths (for add)"},"branch":{"type":"string","description":"Branch name (for checkout)"},"files":{"type":"string","description":"Files to diff"},"cached":{"type":"boolean","description":"Show staged changes (diff)"},"limit":{"type":"integer","description":"Log entry count (default: 10)"},"cwd":{"type":"string","description":"Repository directory (absolute path within allowed paths; defaults to workspace)"}},"required":["operation"]}
+    ;
+
+    const vtable = root.ToolVTable(@This());
 
     pub fn tool(self: *GitTool) Tool {
         return .{
             .ptr = @ptrCast(self),
             .vtable = &vtable,
         };
-    }
-
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
-        const self: *GitTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args);
-    }
-
-    fn vtableName(_: *anyopaque) []const u8 {
-        return "git_operations";
-    }
-
-    fn vtableDesc(_: *anyopaque) []const u8 {
-        return "Perform structured Git operations (status, diff, log, branch, commit, add, checkout, stash).";
-    }
-
-    fn vtableParams(_: *anyopaque) []const u8 {
-        return 
-        \\{"type":"object","properties":{"operation":{"type":"string","enum":["status","diff","log","branch","commit","add","checkout","stash"],"description":"Git operation to perform"},"message":{"type":"string","description":"Commit message (for commit)"},"paths":{"type":"string","description":"File paths (for add)"},"branch":{"type":"string","description":"Branch name (for checkout)"},"files":{"type":"string","description":"Files to diff"},"cached":{"type":"boolean","description":"Show staged changes (diff)"},"limit":{"type":"integer","description":"Log entry count (default: 10)"},"cwd":{"type":"string","description":"Repository directory (absolute path within allowed paths; defaults to workspace)"}},"required":["operation"]}
-        ;
     }
 
     /// Returns false if the git arguments contain dangerous patterns.
@@ -119,7 +101,7 @@ pub const GitTool = struct {
         return false;
     }
 
-    fn execute(self: *GitTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+    pub fn execute(self: *GitTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
         const operation = root.getString(args, "operation") orelse
             return ToolResult.fail("Missing 'operation' parameter");
 
@@ -171,21 +153,9 @@ pub const GitTool = struct {
             argv_buf[i] = a;
         }
 
-        var child = std.process.Child.init(argv_buf[0 .. arg_count + 1], allocator);
-        child.cwd = git_cwd;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        try child.spawn();
-        const stdout = try child.stdout.?.readToEndAlloc(allocator, 1_048_576);
-        const stderr = try child.stderr.?.readToEndAlloc(allocator, 1_048_576);
-        const term = try child.wait();
-
-        const success = switch (term) {
-            .Exited => |code| code == 0,
-            else => false,
-        };
-        return .{ .stdout = stdout, .stderr = stderr, .success = success };
+        const proc = @import("process_util.zig");
+        const result = try proc.run(allocator, argv_buf[0 .. arg_count + 1], .{ .cwd = git_cwd });
+        return .{ .stdout = result.stdout, .stderr = result.stderr, .success = result.success };
     }
 
     /// Run a simple git operation and return stdout on success.

@@ -14,12 +14,13 @@ const MAX_FETCH_BYTES: usize = 65536;
 /// Supports "open" (launch URL), "read" (fetch body via curl), and returns
 /// informative errors for CDP-only actions (click, type, scroll, screenshot).
 pub const BrowserTool = struct {
-    const vtable = Tool.VTable{
-        .execute = &vtableExecute,
-        .name = &vtableName,
-        .description = &vtableDesc,
-        .parameters_json = &vtableParams,
-    };
+    pub const tool_name = "browser";
+    pub const tool_description = "Browse web pages. Actions: open, screenshot, click, type, scroll, read.";
+    pub const tool_params =
+        \\{"type":"object","properties":{"action":{"type":"string","enum":["open","screenshot","click","type","scroll","read"],"description":"Browser action to perform"},"url":{"type":"string","description":"URL to open"},"selector":{"type":"string","description":"CSS selector for click/type"},"text":{"type":"string","description":"Text to type"}},"required":["action"]}
+    ;
+
+    const vtable = root.ToolVTable(@This());
 
     pub fn tool(self: *BrowserTool) Tool {
         return .{
@@ -28,26 +29,7 @@ pub const BrowserTool = struct {
         };
     }
 
-    fn vtableExecute(ptr: *anyopaque, allocator: std.mem.Allocator, args: JsonObjectMap) anyerror!ToolResult {
-        const self: *BrowserTool = @ptrCast(@alignCast(ptr));
-        return self.execute(allocator, args);
-    }
-
-    fn vtableName(_: *anyopaque) []const u8 {
-        return "browser";
-    }
-
-    fn vtableDesc(_: *anyopaque) []const u8 {
-        return "Browse web pages. Actions: open, screenshot, click, type, scroll, read.";
-    }
-
-    fn vtableParams(_: *anyopaque) []const u8 {
-        return 
-        \\{"type":"object","properties":{"action":{"type":"string","enum":["open","screenshot","click","type","scroll","read"],"description":"Browser action to perform"},"url":{"type":"string","description":"URL to open"},"selector":{"type":"string","description":"CSS selector for click/type"},"text":{"type":"string","description":"Text to type"}},"required":["action"]}
-        ;
-    }
-
-    fn execute(_: *BrowserTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
+    pub fn execute(_: *BrowserTool, allocator: std.mem.Allocator, args: JsonObjectMap) !ToolResult {
         const action = root.getString(args, "action") orelse
             return ToolResult.fail("Missing 'action' parameter");
 
