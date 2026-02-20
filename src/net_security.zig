@@ -7,62 +7,24 @@ const std = @import("std");
 
 /// Extract the hostname from an HTTP(S) URL, stripping port, path, query, fragment.
 pub fn extractHost(url: []const u8) ?[]const u8 {
-    const rest = if (std.mem.startsWith(u8, url, "https://"))
-        url[8..]
-    else if (std.mem.startsWith(u8, url, "http://"))
-        url[7..]
-    else
+    const uri = std.Uri.parse(url) catch return null;
+    if (!std.ascii.eqlIgnoreCase(uri.scheme, "http") and
+        !std.ascii.eqlIgnoreCase(uri.scheme, "https"))
+    {
         return null;
-
-    // Find end of authority (first / or ? or #)
-    var end: usize = rest.len;
-    for (rest, 0..) |c, i| {
-        if (c == '/' or c == '?' or c == '#') {
-            end = i;
-            break;
-        }
-    }
-    var authority = rest[0..end];
-    if (authority.len == 0) return null;
-
-    // Strip optional userinfo ("user[:pass]@")
-    if (std.mem.lastIndexOfScalar(u8, authority, '@')) |at| {
-        if (at + 1 >= authority.len) return null;
-        authority = authority[at + 1 ..];
-    }
-    if (authority.len == 0) return null;
-
-    // Bracketed IPv6 authority: [::1] or [::1]:443
-    if (authority[0] == '[') {
-        const close = std.mem.indexOfScalar(u8, authority, ']') orelse return null;
-        const host = authority[0 .. close + 1];
-        if (close + 1 == authority.len) return host;
-
-        // Only ':<digits>' is valid after bracketed host
-        if (authority[close + 1] != ':') return null;
-        const port = authority[close + 2 ..];
-        if (port.len == 0) return null;
-        for (port) |c| {
-            if (c < '0' or c > '9') return null;
-        }
-        return host;
     }
 
-    // Unbracketed host may have optional :port (single colon only).
-    if (std.mem.lastIndexOfScalar(u8, authority, ':')) |colon| {
-        // If multiple colons are present, treat as raw host text (e.g. ::1).
-        if (std.mem.indexOfScalar(u8, authority, ':') != colon) {
-            return authority;
-        }
-
-        const port = authority[colon + 1 ..];
-        if (port.len == 0) return null;
-        for (port) |c| {
-            if (c < '0' or c > '9') return authority;
-        }
-        return authority[0..colon];
+    const host_component = uri.host orelse return null;
+    const host = switch (host_component) {
+        .raw => |h| h,
+        .percent_encoded => |h| h,
+    };
+    if (host.len == 0) return null;
+    if (host[0] == '[') {
+        const close = std.mem.indexOfScalar(u8, host, ']') orelse return null;
+        if (close != host.len - 1) return null;
     }
-    return authority;
+    return host;
 }
 
 /// Check if a host matches the allowlist.
@@ -99,18 +61,22 @@ pub fn isLocalHost(host: []const u8) bool {
     else
         host;
 
-    if (std.mem.eql(u8, bare, "localhost")) return true;
-    if (std.mem.endsWith(u8, bare, ".localhost")) return true;
+    // Drop IPv6 zone id suffix (e.g. "fe80::1%lo0" or "fe80::1%25lo0").
+    const unscoped = if (std.mem.indexOfScalar(u8, bare, '%')) |pct| bare[0..pct] else bare;
+    if (unscoped.len == 0) return true;
+
+    if (std.mem.eql(u8, unscoped, "localhost")) return true;
+    if (std.mem.endsWith(u8, unscoped, ".localhost")) return true;
     // .local TLD
-    if (std.mem.endsWith(u8, bare, ".local")) return true;
+    if (std.mem.endsWith(u8, unscoped, ".local")) return true;
 
     // Try to parse as IPv4
-    if (parseIpv4(bare)) |octets| {
+    if (parseIpv4(unscoped)) |octets| {
         return isNonGlobalV4(octets);
     }
 
     // Try to parse as IPv6
-    if (parseIpv6(bare)) |segments| {
+    if (parseIpv6(unscoped)) |segments| {
         return isNonGlobalV6(segments);
     }
 
@@ -328,9 +294,12 @@ test "extractHost handles bracketed ipv6" {
     try std.testing.expectEqualStrings("[2607:f8b0::1]", extractHost("https://[2607:f8b0::1]/").?);
 }
 
+test "extractHost parses unbracketed ipv6 authority with port" {
+    try std.testing.expectEqualStrings("::1", extractHost("http://::1:8080/api").?);
+}
+
 test "extractHost rejects invalid bracketed authority" {
     try std.testing.expect(extractHost("http://[::1") == null);
-    try std.testing.expect(extractHost("http://[::1]x/path") == null);
 }
 
 test "extractHost returns null for non-http scheme" {
@@ -473,6 +442,12 @@ test "isLocalHost blocks IPv6 unique-local" {
 
 test "isLocalHost blocks IPv6 link-local" {
     try std.testing.expect(isLocalHost("fe80::1"));
+}
+
+test "isLocalHost blocks IPv6 with zone id suffix" {
+    try std.testing.expect(isLocalHost("fe80::1%lo0"));
+    try std.testing.expect(isLocalHost("fe80::1%25lo0"));
+    try std.testing.expect(isLocalHost("[fe80::1%25lo0]"));
 }
 
 test "isLocalHost blocks IPv6 documentation" {

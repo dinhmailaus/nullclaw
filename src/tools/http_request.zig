@@ -431,6 +431,16 @@ test "execute rejects localhost SSRF with URL userinfo" {
     try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "local") != null);
 }
 
+test "execute rejects localhost SSRF with unbracketed ipv6 authority" {
+    var ht = HttpRequestTool{};
+    const t = ht.tool();
+    const parsed = try root.parseTestArgs("{\"url\": \"http://::1:8080/admin\"}");
+    defer parsed.deinit();
+    const result = try t.execute(std.testing.allocator, parsed.value.object);
+    try std.testing.expect(!result.success);
+    try std.testing.expect(std.mem.indexOf(u8, result.error_msg.?, "local") != null);
+}
+
 test "execute rejects private IP SSRF" {
     var ht = HttpRequestTool{};
     const t = ht.tool();
