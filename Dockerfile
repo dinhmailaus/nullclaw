@@ -1,13 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # ── Stage 1: Build ────────────────────────────────────────────
-FROM alpine:3.21 AS builder
+FROM alpine:3.23 AS builder
 
-ARG ZIG_VERSION=0.15.2
-RUN apk add --no-cache musl-dev curl xz \
- && curl -fsSL https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz \
-    | tar -xJ -C /opt \
- && ln -s /opt/zig-x86_64-linux-${ZIG_VERSION}/zig /usr/local/bin/zig
+RUN apk add --no-cache zig musl-dev
 
 WORKDIR /app
 COPY build.zig build.zig.zon ./
