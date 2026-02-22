@@ -90,6 +90,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     try w.print("  Webhook:   {s}\n", .{if (cfg.channels.webhook != null) "configured" else "not configured"});
     try w.print("  Matrix:    {s}\n", .{if (cfg.channels.matrix != null) "configured" else "not configured"});
     try w.print("  IRC:       {s}\n", .{if (cfg.channels.irc != null) "configured" else "not configured"});
+    try w.print("  Signal:    {s}\n", .{if (cfg.channels.signal != null) "configured" else "not configured"});
 
     try w.flush();
 }

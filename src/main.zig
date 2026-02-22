@@ -347,6 +347,7 @@ fn runChannel(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
         std.debug.print("  IRC:       {s}\n", .{if (cfg.channels.irc != null) "configured" else "not configured"});
         std.debug.print("  Lark:      {s}\n", .{if (cfg.channels.lark != null) "configured" else "not configured"});
         std.debug.print("  DingTalk:  {s}\n", .{if (cfg.channels.dingtalk != null) "configured" else "not configured"});
+        std.debug.print("  Signal:    {s}\n", .{if (cfg.channels.signal != null) "configured" else "not configured"});
     } else if (std.mem.eql(u8, subcmd, "start")) {
         try runChannelStart(allocator, sub_args[1..]);
     } else if (std.mem.eql(u8, subcmd, "doctor")) {
@@ -355,6 +356,7 @@ fn runChannel(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
         if (cfg.channels.telegram != null) std.debug.print("  Telegram: configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.discord != null) std.debug.print("  Discord:  configured (use `channel start` to verify)\n", .{});
         if (cfg.channels.slack != null) std.debug.print("  Slack:    configured (use `channel start` to verify)\n", .{});
+        if (cfg.channels.signal != null) std.debug.print("  Signal:   configured (use `channel start` to verify)\n", .{});
     } else if (std.mem.eql(u8, subcmd, "add")) {
         if (sub_args.len < 2) {
             std.debug.print("Usage: nullclaw channel add <type>\n", .{});
@@ -688,12 +690,228 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
     };
     defer config.deinit();
 
-    const telegram_config = config.channels.telegram orelse {
-        std.debug.print("Telegram not configured. Add to config.json:\n", .{});
-        std.debug.print("  \"channels\": {{\"telegram\": {{\"accounts\": {{\"main\": {{\"bot_token\": \"...\"}}}}}}}}\n", .{});
+    // Check which channels are configured
+    const telegram_config = config.channels.telegram;
+    const signal_config = config.channels.signal;
+
+    // Must have at least one messaging channel configured
+    if (telegram_config == null and signal_config == null) {
+        std.debug.print("No messaging channel configured. Add to config.json:\n", .{});
+        std.debug.print("  Telegram: {{\"channels\": {{\"telegram\": {{\"accounts\": {{\"main\": {{\"bot_token\": \"...\"}}}}}}}}\n", .{});
+        std.debug.print("  Signal:   {{\"channels\": {{\"signal\": {{\"accounts\": {{\"main\": {{\"http_url\": \"http://127.0.0.1:8080\", \"account\": \"+1234567890\"}}}}}}}}\n", .{});
         std.process.exit(1);
+    }
+
+    // Run Signal if configured, otherwise run Telegram
+    if (signal_config != null) {
+        const sig_config = signal_config.?;
+        return runSignalChannel(allocator, args, &config, sig_config);
+    }
+
+    // Telegram path
+    const tg_config = telegram_config.?;
+    return runTelegramChannel(allocator, args, config, tg_config);
+}
+
+// ── Signal Channel ─────────────────────────────────────────────────
+
+fn runSignalChannel(allocator: std.mem.Allocator, args: []const []const u8, config: *const yc.config.Config, signal_config: yc.config.SignalConfig) !void {
+    _ = args;
+
+    // Resolve API key: config providers first, then env vars (ANTHROPIC_API_KEY, etc.)
+    const resolved_api_key = yc.providers.resolveApiKeyFromConfig(
+        allocator,
+        config.default_provider,
+        config.providers,
+    ) catch null;
+
+    // OAuth providers (openai-codex) don't need an API key
+    const provider_kind = yc.providers.classifyProvider(config.default_provider);
+    if (resolved_api_key == null and provider_kind != .openai_codex_provider) {
+        std.debug.print("No API key configured. Set env var or add to ~/.nullclaw/config.json:\n", .{});
+        std.debug.print("  \"providers\": {{ \"{s}\": {{ \"api_key\": \"...\" }} }}\n", .{config.default_provider});
+        std.process.exit(1);
+    }
+
+    const model = config.default_model orelse "anthropic/claude-3.5-sonnet";
+    const temperature = config.default_temperature;
+
+    std.debug.print("nullclaw Signal bot starting...\n", .{});
+    std.debug.print("  Provider: {s}\n", .{config.default_provider});
+    std.debug.print("  Model: {s}\n", .{model});
+    std.debug.print("  Temperature: {d:.1}\n", .{temperature});
+    std.debug.print("  Signal URL: {s}\n", .{signal_config.http_url});
+    std.debug.print("  Account: {s}\n", .{signal_config.account});
+    if (signal_config.allowed_users.len == 0) {
+        std.debug.print("  Allowed users: (none — all messages will be denied)\n", .{});
+    } else if (signal_config.allowed_users.len == 1 and std.mem.eql(u8, signal_config.allowed_users[0], "*")) {
+        std.debug.print("  Allowed users: *\n", .{});
+    } else {
+        std.debug.print("  Allowed users:", .{});
+        for (signal_config.allowed_users) |u| {
+            std.debug.print(" {s}", .{u});
+        }
+        std.debug.print("\n", .{});
+    }
+    if (signal_config.allowed_groups.len == 0) {
+        std.debug.print("  Allowed groups: (none)\n", .{});
+    } else if (signal_config.allowed_groups.len == 1 and std.mem.eql(u8, signal_config.allowed_groups[0], "*")) {
+        std.debug.print("  Allowed groups: *\n", .{});
+    } else {
+        std.debug.print("  Allowed groups:", .{});
+        for (signal_config.allowed_groups) |g| {
+            std.debug.print(" {s}", .{g});
+        }
+        std.debug.print("\n", .{});
+    }
+
+    var sg = yc.channels.signal.SignalChannel.init(
+        allocator,
+        signal_config.http_url,
+        signal_config.account,
+        signal_config.allowed_users,
+        signal_config.allowed_groups,
+        signal_config.ignore_attachments,
+        signal_config.ignore_stories,
+    );
+
+    // Verify health
+    if (!sg.healthCheck()) {
+        std.debug.print("Signal health check failed. Is signal-cli daemon running?\n", .{});
+        std.debug.print("  Run: signal-cli --account {s} daemon --http 127.0.0.1:8080\n", .{signal_config.account});
+        std.process.exit(1);
+    }
+
+    std.debug.print("  Polling for messages... (Ctrl+C to stop)\n\n", .{});
+
+    // Initialize MCP tools from config
+    const mcp_tools: ?[]const yc.tools.Tool = if (config.mcp_servers.len > 0)
+        yc.mcp.initMcpTools(allocator, config.mcp_servers) catch |err| blk: {
+            std.debug.print("  MCP: init failed: {}\n", .{err});
+            break :blk null;
+        }
+    else
+        null;
+
+    // Build security policy from config
+    const security = @import("nullclaw").security.policy;
+    var tracker = security.RateTracker.init(allocator, config.autonomy.max_actions_per_hour);
+    defer tracker.deinit();
+
+    var sec_policy = security.SecurityPolicy{
+        .autonomy = config.autonomy.level,
+        .workspace_dir = config.workspace_dir,
+        .workspace_only = config.autonomy.workspace_only,
+        .allowed_commands = if (config.autonomy.allowed_commands.len > 0) config.autonomy.allowed_commands else &security.default_allowed_commands,
+        .max_actions_per_hour = config.autonomy.max_actions_per_hour,
+        .require_approval_for_medium_risk = config.autonomy.require_approval_for_medium_risk,
+        .block_high_risk_commands = config.autonomy.block_high_risk_commands,
+        .tracker = &tracker,
     };
 
+    // Create tools (for system prompt and tool calling)
+    const tools = yc.tools.allTools(allocator, config.workspace_dir, .{
+        .http_enabled = config.http_request.enabled,
+        .browser_enabled = config.browser.enabled,
+        .screenshot_enabled = true,
+        .mcp_tools = mcp_tools,
+        .agents = config.agents,
+        .fallback_api_key = resolved_api_key,
+        .tools_config = config.tools,
+        .allowed_paths = config.autonomy.allowed_paths,
+        .policy = &sec_policy,
+    }) catch &.{};
+    defer if (tools.len > 0) allocator.free(tools);
+
+    if (mcp_tools) |mt| {
+        std.debug.print("  MCP tools: {d}\n", .{mt.len});
+    }
+
+    // Create optional memory backend (don't fail if unavailable)
+    var mem_opt: ?yc.memory.Memory = null;
+    const db_path = std.fs.path.joinZ(allocator, &.{ config.workspace_dir, "memory.db" }) catch null;
+    defer if (db_path) |p| allocator.free(p);
+    if (db_path) |p| {
+        if (yc.memory.createMemory(allocator, config.memory.backend, p)) |mem| {
+            mem_opt = mem;
+        } else |_| {}
+    }
+
+    // Create provider
+    var holder = yc.providers.ProviderHolder.fromConfig(allocator, config.default_provider, resolved_api_key);
+    const provider_i = holder.provider();
+
+    // Create noop observer
+    var noop_obs = yc.observability.NoopObserver{};
+    const obs = noop_obs.observer();
+
+    // Initialize session manager
+    var session_mgr = yc.session.SessionManager.init(allocator, config, provider_i, tools, mem_opt, obs);
+    session_mgr.policy = &sec_policy;
+    defer session_mgr.deinit();
+
+    // Session key buffer
+    var key_buf: [128]u8 = undefined;
+
+    // Message loop: poll → full agent loop (tool calling) → reply
+    while (true) {
+        const messages = sg.pollMessages(allocator) catch |err| {
+            std.debug.print("Signal poll error: {}\n", .{err});
+            std.Thread.sleep(5 * std.time.ns_per_s);
+            continue;
+        };
+
+        for (messages) |msg| {
+            std.debug.print("[{s}] {s}: {s}\n", .{ msg.channel, msg.id, msg.content });
+
+            // Session key: "signal:{sender}"
+            const session_key = std.fmt.bufPrint(&key_buf, "signal:{s}", .{msg.sender}) catch msg.sender;
+
+            const reply = session_mgr.processMessage(session_key, msg.content) catch |err| {
+                std.debug.print("  Agent error: {}\n", .{err});
+                const err_msg = switch (err) {
+                    error.CurlFailed, error.CurlReadError, error.CurlWaitError => "Network error. Please try again.",
+                    error.ProviderDoesNotSupportVision => "The current provider does not support image input. Switch to a vision-capable provider or remove [IMAGE:] attachments.",
+                    error.OutOfMemory => "Out of memory.",
+                    else => "An error occurred. Try again or /new for a fresh session.",
+                };
+                if (msg.reply_target) |target| {
+                    sg.sendMessage(target, err_msg) catch |send_err| std.debug.print("  Send error: {}\n", .{send_err});
+                }
+                continue;
+            };
+            defer allocator.free(reply);
+
+            std.debug.print("  -> {s}\n", .{reply});
+
+            // Reply on Signal; handles split
+            if (msg.reply_target) |target| {
+                sg.sendMessage(target, reply) catch |err| {
+                    std.debug.print("  Send error: {}\n", .{err});
+                };
+            }
+        }
+
+        if (messages.len > 0) {
+            // Free message memory
+            for (messages) |msg| {
+                allocator.free(msg.id);
+                allocator.free(msg.sender);
+                allocator.free(msg.content);
+                if (msg.first_name) |fn_| allocator.free(fn_);
+                if (msg.reply_target) |rt| allocator.free(rt);
+            }
+            allocator.free(messages);
+        }
+
+        // Small delay between polls
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+    }
+}
+
+// ── Telegram Channel ───────────────────────────────────────────────-
+
+fn runTelegramChannel(allocator: std.mem.Allocator, args: []const []const u8, config: yc.config.Config, telegram_config: yc.config.TelegramConfig) !void {
     // Determine allowed users: --user CLI args override config allow_from
     var user_list: std.ArrayList([]const u8) = .empty;
     defer user_list.deinit(allocator);

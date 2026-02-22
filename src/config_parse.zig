@@ -1032,6 +1032,35 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                 }
             }
 
+            // Signal
+            if (ch.object.get("signal")) |sg| {
+                if (sg == .object) {
+                    if (getFirstAccount(sg.object)) |acc| sg_blk: {
+                        const url = acc.get("http_url") orelse break :sg_blk;
+                        const acct = acc.get("account") orelse break :sg_blk;
+                        if (url != .string or acct != .string) break :sg_blk;
+                        self.channels.signal = .{
+                            .http_url = try self.allocator.dupe(u8, url.string),
+                            .account = try self.allocator.dupe(u8, acct.string),
+                        };
+                        if (self.channels.signal) |*sc| {
+                            if (acc.get("allowed_users")) |v| {
+                                if (v == .array) sc.allowed_users = try parseStringArray(self.allocator, v.array);
+                            }
+                            if (acc.get("allowed_groups")) |v| {
+                                if (v == .array) sc.allowed_groups = try parseStringArray(self.allocator, v.array);
+                            }
+                            if (acc.get("ignore_attachments")) |v| {
+                                if (v == .bool) sc.ignore_attachments = v.bool;
+                            }
+                            if (acc.get("ignore_stories")) |v| {
+                                if (v == .bool) sc.ignore_stories = v.bool;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Webhook (no accounts wrapper)
             if (ch.object.get("webhook")) |wh| {
                 if (wh == .object) {

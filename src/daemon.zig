@@ -15,6 +15,7 @@ const bus_mod = @import("bus.zig");
 const dispatch = @import("channels/dispatch.zig");
 const channel_loop = @import("channel_loop.zig");
 const telegram = @import("channels/telegram.zig");
+const signal = @import("channels/signal.zig");
 
 const log = std.log.scoped(.daemon);
 
@@ -123,7 +124,8 @@ pub fn hasSupervisedChannels(config: *const Config) bool {
         config.channels.slack != null or
         config.channels.imessage != null or
         config.channels.matrix != null or
-        config.channels.whatsapp != null;
+        config.channels.whatsapp != null or
+        config.channels.signal != null;
 }
 
 /// Shutdown signal — set to true to stop the daemon.
@@ -263,21 +265,85 @@ fn channelSupervisorThread(
         }
     }
 
+    // ── Signal supervision ──
+    var sg_loop_state: ?*channel_loop.SignalLoopState = null;
+    var sg_health_channel: ?*signal.SignalChannel = null;
+    var sg_supervised: ?dispatch.SupervisedChannel = null;
+
+    if (config.channels.signal) |sg_config| {
+        if (channel_rt == null) {
+            state.markError("channels", "signal runtime init failed");
+            health.markComponentError("channels", "signal runtime init failed");
+        }
+        if (channel_rt) |rt| {
+            // Heap-alloc loop state
+            const ls = allocator.create(channel_loop.SignalLoopState) catch {
+                state.markError("channels", "failed to alloc signal loop state");
+                health.markComponentError("channels", "signal alloc failed");
+                return;
+            };
+            ls.* = channel_loop.SignalLoopState.init();
+            sg_loop_state = ls;
+
+            // Separate SignalChannel for health-check probe (stateless HTTP GET)
+            const hc = allocator.create(signal.SignalChannel) catch {
+                state.markError("channels", "failed to alloc signal health channel");
+                return;
+            };
+            hc.* = signal.SignalChannel.init(
+                allocator,
+                sg_config.http_url,
+                sg_config.account,
+                sg_config.allowed_users,
+                sg_config.allowed_groups,
+                sg_config.ignore_attachments,
+                sg_config.ignore_stories,
+            );
+            sg_health_channel = hc;
+
+            // Register in channel registry for outbound dispatch
+            channel_registry.register(hc.channel()) catch |err| {
+                log.warn("Failed to register signal in channel registry: {}", .{err});
+            };
+
+            // SupervisedChannel wrapper
+            sg_supervised = dispatch.spawnSupervisedChannel(hc.channel(), 5);
+
+            // Spawn the polling thread
+            ls.thread = spawnSignalThread(allocator, config, rt, ls);
+            if (ls.thread != null) {
+                if (sg_supervised) |*s| s.recordSuccess();
+                log.info("Signal polling thread started", .{});
+            }
+        }
+    }
+
     defer {
-        // Shutdown: signal polling thread to stop and join
+        // Shutdown: signal polling threads to stop and join
         if (tg_loop_state) |ls| {
             ls.stop_requested.store(true, .release);
             if (ls.thread) |t| t.join();
             allocator.destroy(ls);
         }
         if (tg_health_channel) |hc| allocator.destroy(hc);
+
+        if (sg_loop_state) |ls| {
+            ls.stop_requested.store(true, .release);
+            if (ls.thread) |t| t.join();
+            allocator.destroy(ls);
+        }
+        if (sg_health_channel) |hc| allocator.destroy(hc);
     }
 
     // ── Monitoring loop ──
+    const has_tg = tg_loop_state != null;
+    const has_sg = sg_loop_state != null;
+
     while (!isShutdownRequested()) {
         std.Thread.sleep(CHANNEL_WATCH_INTERVAL_SECS * std.time.ns_per_s);
         if (isShutdownRequested()) break;
 
+        // ── Telegram monitoring ──
         if (tg_loop_state) |ls| {
             const now = std.time.timestamp();
             const last = ls.last_activity.load(.acquire);
@@ -329,8 +395,63 @@ fn channelSupervisorThread(
                     }
                 }
             }
-        } else {
-            // No telegram configured — just report ok
+        }
+
+        // ── Signal monitoring ──
+        if (sg_loop_state) |ls| {
+            const now = std.time.timestamp();
+            const last = ls.last_activity.load(.acquire);
+            const stale = (now - last) > STALE_THRESHOLD_SECS;
+
+            // Active HTTP health-check probe
+            const probe_ok = if (sg_health_channel) |hc| hc.healthCheck() else true;
+
+            if (!stale and probe_ok) {
+                health.markComponentOk("signal");
+                state.markRunning("channels");
+                if (sg_supervised) |*s| {
+                    if (s.state != .running) s.recordSuccess();
+                }
+            } else {
+                const reason = if (stale) "signal polling thread stale" else "signal health check failed";
+                log.warn("Signal issue: {s}", .{reason});
+                health.markComponentError("signal", reason);
+
+                if (sg_supervised) |*s| {
+                    s.recordFailure();
+
+                    if (s.shouldRestart()) {
+                        log.info("Restarting Signal polling (attempt {d})", .{s.restart_count});
+                        state.markError("channels", reason);
+
+                        // Stop old thread
+                        ls.stop_requested.store(true, .release);
+                        if (ls.thread) |t| t.join();
+
+                        // Backoff sleep
+                        std.Thread.sleep(s.currentBackoffMs() * std.time.ns_per_ms);
+
+                        // Respawn
+                        ls.stop_requested.store(false, .release);
+                        ls.last_activity.store(std.time.timestamp(), .release);
+                        if (channel_rt) |rt| {
+                            ls.thread = spawnSignalThread(allocator, config, rt, ls);
+                            if (ls.thread != null) {
+                                s.recordSuccess();
+                                state.markRunning("channels");
+                                health.markComponentOk("signal");
+                            }
+                        }
+                    } else if (s.state == .gave_up) {
+                        state.markError("channels", "signal gave up after max restarts");
+                        health.markComponentError("signal", "gave up after max restarts");
+                    }
+                }
+            }
+        }
+
+        // If no channels configured, just mark healthy
+        if (!has_tg and !has_sg) {
             health.markComponentOk("channels");
         }
     }
@@ -349,6 +470,23 @@ fn spawnTelegramThread(
         .{ allocator, config, runtime, loop_state },
     ) catch |err| {
         log.err("Failed to spawn Telegram thread: {}", .{err});
+        return null;
+    };
+}
+
+/// Spawn a Signal polling thread.
+fn spawnSignalThread(
+    allocator: std.mem.Allocator,
+    config: *const Config,
+    runtime: *channel_loop.ChannelRuntime,
+    loop_state: *channel_loop.SignalLoopState,
+) ?std.Thread {
+    return std.Thread.spawn(
+        .{ .stack_size = 512 * 1024 },
+        channel_loop.runSignalLoop,
+        .{ allocator, config, runtime, loop_state },
+    ) catch |err| {
+        log.err("Failed to spawn Signal thread: {}", .{err});
         return null;
     };
 }

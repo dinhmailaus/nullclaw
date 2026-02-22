@@ -17,6 +17,8 @@ const voice = @import("voice.zig");
 const health = @import("health.zig");
 const daemon = @import("daemon.zig");
 
+const signal = @import("channels/signal.zig");
+
 const log = std.log.scoped(.channel_loop);
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -256,6 +258,122 @@ pub fn runTelegramLoop(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// SignalLoopState — shared state between supervisor and polling thread
+// ════════════════════════════════════════════════════════════════════════════
+
+pub const SignalLoopState = struct {
+    /// Updated after each pollMessages() — epoch seconds.
+    last_activity: std.atomic.Value(i64),
+    /// Supervisor sets this to ask the polling thread to stop.
+    stop_requested: std.atomic.Value(bool),
+    /// Thread handle for join().
+    thread: ?std.Thread = null,
+
+    pub fn init() SignalLoopState {
+        return .{
+            .last_activity = std.atomic.Value(i64).init(std.time.timestamp()),
+            .stop_requested = std.atomic.Value(bool).init(false),
+        };
+    }
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// runSignalLoop — polling thread function
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Thread-entry function for the Signal SSE polling loop.
+/// Mirrors runTelegramLoop but uses signal-cli's SSE/JSON-RPC API.
+/// Checks `loop_state.stop_requested` and `daemon.isShutdownRequested()`
+/// for graceful shutdown.
+pub fn runSignalLoop(
+    allocator: std.mem.Allocator,
+    config: *const Config,
+    runtime: *ChannelRuntime,
+    loop_state: *SignalLoopState,
+) void {
+    const signal_config = config.channels.signal orelse return;
+
+    // Heap-alloc SignalChannel for vtable pointer stability
+    const sg_ptr = allocator.create(signal.SignalChannel) catch return;
+    defer allocator.destroy(sg_ptr);
+    sg_ptr.* = signal.SignalChannel.init(
+        allocator,
+        signal_config.http_url,
+        signal_config.account,
+        signal_config.allowed_users,
+        signal_config.allowed_groups,
+        signal_config.ignore_attachments,
+        signal_config.ignore_stories,
+    );
+
+    // Update activity timestamp at start
+    loop_state.last_activity.store(std.time.timestamp(), .release);
+
+    var evict_counter: u32 = 0;
+
+    while (!loop_state.stop_requested.load(.acquire) and !daemon.isShutdownRequested()) {
+        const messages = sg_ptr.pollMessages(allocator) catch |err| {
+            log.warn("Signal poll error: {}", .{err});
+            loop_state.last_activity.store(std.time.timestamp(), .release);
+            std.Thread.sleep(5 * std.time.ns_per_s);
+            continue;
+        };
+
+        // Update activity after each poll (even if no messages)
+        loop_state.last_activity.store(std.time.timestamp(), .release);
+
+        for (messages) |msg| {
+            // Session key: "signal:{sender}"
+            var key_buf: [128]u8 = undefined;
+            const session_key = std.fmt.bufPrint(&key_buf, "signal:{s}", .{msg.sender}) catch msg.sender;
+
+            // Send typing indicator (best-effort)
+            if (msg.reply_target) |target| {
+                sg_ptr.sendTypingIndicator(target);
+            }
+
+            const reply = runtime.session_mgr.processMessage(session_key, msg.content) catch |err| {
+                log.err("Signal agent error: {}", .{err});
+                const err_msg: []const u8 = switch (err) {
+                    error.CurlFailed, error.CurlReadError, error.CurlWaitError => "Network error. Please try again.",
+                    error.ProviderDoesNotSupportVision => "The current provider does not support image input.",
+                    error.OutOfMemory => "Out of memory.",
+                    else => "An error occurred. Try again.",
+                };
+                if (msg.reply_target) |target| {
+                    sg_ptr.sendMessage(target, err_msg) catch |send_err| log.err("failed to send signal error reply: {}", .{send_err});
+                }
+                continue;
+            };
+            defer allocator.free(reply);
+
+            // Reply on Signal
+            if (msg.reply_target) |target| {
+                sg_ptr.sendMessage(target, reply) catch |err| {
+                    log.warn("Signal send error: {}", .{err});
+                };
+            }
+        }
+
+        if (messages.len > 0) {
+            for (messages) |msg| {
+                msg.deinit(allocator);
+            }
+            allocator.free(messages);
+        }
+
+        // Periodic session eviction
+        evict_counter += 1;
+        if (evict_counter >= 100) {
+            evict_counter = 0;
+            _ = runtime.session_mgr.evictIdle(config.agent.session_idle_timeout_secs);
+        }
+
+        health.markComponentOk("signal");
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Tests
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -291,4 +409,27 @@ test "ProviderHolder tagged union fields" {
     try std.testing.expect(@hasField(ProviderHolder, "ollama"));
     try std.testing.expect(@hasField(ProviderHolder, "compatible"));
     try std.testing.expect(@hasField(ProviderHolder, "openai_codex"));
+}
+
+test "SignalLoopState init defaults" {
+    const state = SignalLoopState.init();
+    try std.testing.expect(!state.stop_requested.load(.acquire));
+    try std.testing.expect(state.thread == null);
+    try std.testing.expect(state.last_activity.load(.acquire) > 0);
+}
+
+test "SignalLoopState stop_requested toggle" {
+    var state = SignalLoopState.init();
+    try std.testing.expect(!state.stop_requested.load(.acquire));
+    state.stop_requested.store(true, .release);
+    try std.testing.expect(state.stop_requested.load(.acquire));
+}
+
+test "SignalLoopState last_activity update" {
+    var state = SignalLoopState.init();
+    const before = state.last_activity.load(.acquire);
+    std.Thread.sleep(10 * std.time.ns_per_ms);
+    state.last_activity.store(std.time.timestamp(), .release);
+    const after = state.last_activity.load(.acquire);
+    try std.testing.expect(after >= before);
 }

@@ -229,6 +229,15 @@ pub const DingTalkConfig = struct {
     allow_from: []const []const u8 = &.{},
 };
 
+pub const SignalConfig = struct {
+    http_url: []const u8,
+    account: []const u8,
+    allowed_users: []const []const u8 = &.{},
+    allowed_groups: []const []const u8 = &.{},
+    ignore_attachments: bool = true,
+    ignore_stories: bool = true,
+};
+
 pub const ChannelsConfig = struct {
     cli: bool = true,
     telegram: ?TelegramConfig = null,
@@ -241,6 +250,7 @@ pub const ChannelsConfig = struct {
     irc: ?IrcConfig = null,
     lark: ?LarkConfig = null,
     dingtalk: ?DingTalkConfig = null,
+    signal: ?SignalConfig = null,
 };
 
 // ── Memory config ───────────────────────────────────────────────

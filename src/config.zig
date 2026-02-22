@@ -30,6 +30,7 @@ pub const IrcConfig = config_types.IrcConfig;
 pub const LarkReceiveMode = config_types.LarkReceiveMode;
 pub const LarkConfig = config_types.LarkConfig;
 pub const DingTalkConfig = config_types.DingTalkConfig;
+pub const SignalConfig = config_types.SignalConfig;
 pub const ChannelsConfig = config_types.ChannelsConfig;
 pub const MemoryConfig = config_types.MemoryConfig;
 pub const TunnelConfig = config_types.TunnelConfig;

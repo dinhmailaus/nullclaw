@@ -668,6 +668,8 @@ fn checkChannels(allocator: std.mem.Allocator, cfg: *const Config, items: *std.A
         items.append(allocator, DiagItem.ok(cat, "Matrix configured")) catch {};
     if (cfg.channels.irc != null)
         items.append(allocator, DiagItem.ok(cat, "IRC configured")) catch {};
+    if (cfg.channels.signal != null)
+        items.append(allocator, DiagItem.ok(cat, "Signal configured")) catch {};
 }
 
 /// Check a specific diagnostic (utility for programmatic access).
