@@ -120,7 +120,11 @@ pub fn run(allocator: std.mem.Allocator) !void {
         return;
     };
     defer cfg.deinit();
-    try runDoctor(allocator, &cfg, stdout);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    try runDoctor(arena.allocator(), &cfg, stdout);
     try stdout.flush();
 }
 
