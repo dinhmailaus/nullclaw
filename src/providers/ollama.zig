@@ -159,7 +159,7 @@ fn appendOllamaImageValue(
         try buf.appendSlice(allocator, ",\"images\":[\"");
         has_images.* = true;
     } else {
-        try buf.appendSlice(allocator, "\",\"");
+        try buf.appendSlice(allocator, ",\"");
     }
     const escaped = try jsonEscapeString(allocator, value);
     defer allocator.free(escaped);
