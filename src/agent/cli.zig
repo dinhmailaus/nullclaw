@@ -80,6 +80,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const [:0]const u8) !void {
         }
     else
         null;
+    defer if (mcp_tools) |mt| allocator.free(mt);
 
     // Build security policy from config
     var tracker = security.RateTracker.init(allocator, cfg.autonomy.max_actions_per_hour);

@@ -18,6 +18,7 @@ const MemoryEntry = root.MemoryEntry;
 pub const LucidMemory = struct {
     local: root.SqliteMemory,
     allocator: std.mem.Allocator,
+    owns_self: bool = false,
     lucid_cmd: []const u8,
     workspace_dir: []const u8,
     token_budget: usize,
@@ -439,9 +440,10 @@ pub const LucidMemory = struct {
 
     fn implDeinit(ptr: *anyopaque) void {
         const self = castSelf(ptr);
-        const alloc = self.allocator;
         self.deinit();
-        alloc.destroy(self);
+        if (self.owns_self) {
+            self.allocator.destroy(self);
+        }
     }
 
     fn castSelf(ptr: *anyopaque) *Self {

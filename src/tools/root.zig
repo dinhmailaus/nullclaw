@@ -230,7 +230,12 @@ pub fn defaultToolsWithPaths(
     allowed_paths: []const []const u8,
 ) ![]Tool {
     var list: std.ArrayList(Tool) = .{};
-    errdefer list.deinit(allocator);
+    errdefer {
+        for (list.items) |t| {
+            t.deinit(allocator);
+        }
+        list.deinit(allocator);
+    }
 
     const st = try allocator.create(shell.ShellTool);
     st.* = .{ .workspace_dir = workspace_dir, .allowed_paths = allowed_paths };
@@ -273,7 +278,12 @@ pub fn allTools(
     },
 ) ![]Tool {
     var list: std.ArrayList(Tool) = .{};
-    errdefer list.deinit(allocator);
+    errdefer {
+        for (list.items) |t| {
+            t.deinit(allocator);
+        }
+        list.deinit(allocator);
+    }
 
     // Core tools with workspace_dir + allowed_paths + tools_config limits
     const tc = opts.tools_config;
@@ -417,7 +427,12 @@ pub fn subagentTools(
     },
 ) ![]Tool {
     var list: std.ArrayList(Tool) = .{};
-    errdefer list.deinit(allocator);
+    errdefer {
+        for (list.items) |t| {
+            t.deinit(allocator);
+        }
+        list.deinit(allocator);
+    }
 
     const st = try allocator.create(shell.ShellTool);
     st.* = .{ .workspace_dir = workspace_dir, .allowed_paths = opts.allowed_paths, .policy = opts.policy };
