@@ -318,7 +318,7 @@ fn runChannel(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
             \\
             \\Commands:
             \\  list                          List configured channels
-            \\  start [channel]               Start a channel (default: first available)
+            \\  start [channel]               Start all channels (or one specific channel)
             \\  doctor                        Run health checks
             \\  add <type> <config_json>      Add a channel
             \\  remove <name>                 Remove a channel
@@ -683,7 +683,7 @@ fn runOnboard(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
 // ── Channel Start ────────────────────────────────────────────────
 // Usage: nullclaw channel start [channel]
 // If a channel name is given, start that specific channel.
-// Otherwise, start the first available (Telegram first, then Signal).
+// Otherwise, start all configured channels/accounts in one runtime.
 
 fn canStartFromChannelCommand(channel_id: yc.channel_catalog.ChannelId) bool {
     return switch (channel_id) {
@@ -786,25 +786,7 @@ fn runChannelStart(allocator: std.mem.Allocator, args: []const []const u8) !void
         return dispatchChannelStart(allocator, child_args, &config, meta);
     }
 
-    // No channel specified -- keep historical preference:
-    // Telegram first, then Signal, then any other configured channel.
-    if (yc.channel_catalog.findByKey("telegram")) |meta| {
-        if (yc.channel_catalog.isConfigured(&config, meta.id)) {
-            return dispatchChannelStart(allocator, args, &config, meta);
-        }
-    }
-    if (yc.channel_catalog.findByKey("signal")) |meta| {
-        if (yc.channel_catalog.isConfigured(&config, meta.id)) {
-            return dispatchChannelStart(allocator, args, &config, meta);
-        }
-    }
-
-    for (yc.channel_catalog.known_channels) |meta| {
-        if (!canStartFromChannelCommand(meta.id)) continue;
-        if (meta.id == .telegram or meta.id == .signal) continue;
-        if (!yc.channel_catalog.isConfigured(&config, meta.id)) continue;
-        return dispatchChannelStart(allocator, args, &config, meta);
-    }
+    return runAllConfiguredChannels(allocator, &config);
 }
 
 /// Start a single configured non-polling channel using ChannelManager.
@@ -841,6 +823,19 @@ fn runGatewayChannel(allocator: std.mem.Allocator, config: *const yc.config.Conf
     while (!yc.daemon.isShutdownRequested()) {
         std.Thread.sleep(1 * std.time.ns_per_s);
     }
+}
+
+fn applyChannelStartRuntimeProfile(cfg: *yc.config.Config) void {
+    // `channel start` should run channel listeners and message routing only.
+    // Keep scheduler/heartbeat for `nullclaw daemon`.
+    cfg.scheduler.enabled = false;
+    cfg.heartbeat.enabled = false;
+}
+
+fn runAllConfiguredChannels(allocator: std.mem.Allocator, config: *yc.config.Config) !void {
+    applyChannelStartRuntimeProfile(config);
+    std.debug.print("Starting all configured channels and accounts...\n", .{});
+    return yc.daemon.run(allocator, config, config.gateway.host, config.gateway.port);
 }
 
 // ── Signal Channel ─────────────────────────────────────────────────
@@ -1834,4 +1829,20 @@ test "applyGatewayDaemonOverrides rejects invalid port" {
     };
     const args = [_][]const u8{ "--port", "bad" };
     try std.testing.expectError(error.InvalidPort, applyGatewayDaemonOverrides(&cfg, &args));
+}
+
+test "applyChannelStartRuntimeProfile disables scheduler and heartbeat" {
+    var cfg = yc.config.Config{
+        .workspace_dir = "/tmp/nullclaw-test",
+        .config_path = "/tmp/nullclaw-test/config.json",
+        .default_model = "openrouter/auto",
+        .allocator = std.testing.allocator,
+    };
+    cfg.scheduler.enabled = true;
+    cfg.heartbeat.enabled = true;
+
+    applyChannelStartRuntimeProfile(&cfg);
+
+    try std.testing.expect(!cfg.scheduler.enabled);
+    try std.testing.expect(!cfg.heartbeat.enabled);
 }
