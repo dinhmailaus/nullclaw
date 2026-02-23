@@ -30,7 +30,7 @@
 
             zigBuildFlags = [ "-Doptimize=${optimize}" ];
 
-            nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.autoPatchelfHook ];
 
             meta = with pkgs.lib; {
               mainProgram = project;
