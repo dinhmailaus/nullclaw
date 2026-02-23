@@ -30,7 +30,13 @@ pub const DiscordChannel = struct {
     resume_gateway_url: ?[]u8 = null,
     bot_user_id: ?[]u8 = null,
     gateway_thread: ?std.Thread = null,
-    ws_fd: std.atomic.Value(i32) = std.atomic.Value(i32).init(-1),
+    ws_fd: std.atomic.Value(SocketFd) = std.atomic.Value(SocketFd).init(invalid_socket),
+
+    const SocketFd = std.net.Stream.Handle;
+    const invalid_socket: SocketFd = switch (builtin.os.tag) {
+        .windows => std.os.windows.ws2_32.INVALID_SOCKET,
+        else => -1,
+    };
 
     pub const MAX_MESSAGE_LEN: usize = 2000;
     pub const GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json";
@@ -224,9 +230,11 @@ pub const DiscordChannel = struct {
         self.heartbeat_stop.store(true, .release);
         // Close socket to unblock blocking read
         const fd = self.ws_fd.load(.acquire);
-        if (fd >= 0) {
-            if (comptime builtin.os.tag != .windows) {
-                std.posix.close(@intCast(fd));
+        if (fd != invalid_socket) {
+            if (comptime builtin.os.tag == .windows) {
+                _ = std.os.windows.ws2_32.closesocket(fd);
+            } else {
+                std.posix.close(fd);
             }
         }
         if (self.gateway_thread) |t| {
@@ -319,7 +327,7 @@ pub const DiscordChannel = struct {
         defer {
             self.heartbeat_stop.store(true, .release);
             hbt.join();
-            self.ws_fd.store(-1, .release);
+            self.ws_fd.store(invalid_socket, .release);
             ws.deinit();
         }
 
