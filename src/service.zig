@@ -73,7 +73,8 @@ fn stopService(allocator: std.mem.Allocator) !void {
         runChecked(allocator, &.{ "launchctl", "stop", SERVICE_LABEL }) catch {};
         runChecked(allocator, &.{ "launchctl", "unload", "-w", plist }) catch {};
     } else if (comptime builtin.os.tag == .linux) {
-        runChecked(allocator, &.{ "systemctl", "--user", "stop", "nullclaw.service" }) catch {};
+        try assertLinuxSystemdUserAvailable(allocator);
+        try runChecked(allocator, &.{ "systemctl", "--user", "stop", "nullclaw.service" });
     } else {
         return error.UnsupportedPlatform;
     }
@@ -108,7 +109,7 @@ fn serviceStatus(allocator: std.mem.Allocator) !void {
 }
 
 fn uninstall(allocator: std.mem.Allocator) !void {
-    stopService(allocator) catch {};
+    try stopService(allocator);
 
     if (comptime builtin.os.tag == .macos) {
         const plist = try macosServiceFile(allocator);
@@ -117,8 +118,12 @@ fn uninstall(allocator: std.mem.Allocator) !void {
     } else if (comptime builtin.os.tag == .linux) {
         const unit = try linuxServiceFile(allocator);
         defer allocator.free(unit);
-        std.fs.deleteFileAbsolute(unit) catch {};
-        runChecked(allocator, &.{ "systemctl", "--user", "daemon-reload" }) catch {};
+        std.fs.deleteFileAbsolute(unit) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+        try assertLinuxSystemdUserAvailable(allocator);
+        try runChecked(allocator, &.{ "systemctl", "--user", "daemon-reload" });
     } else {
         return error.UnsupportedPlatform;
     }
@@ -253,7 +258,6 @@ fn isSystemdUnavailableDetail(detail: []const u8) bool {
         std.ascii.indexOfIgnoreCase(detail, "failed to connect to bus") != null or
         std.ascii.indexOfIgnoreCase(detail, "not been booted with systemd") != null or
         std.ascii.indexOfIgnoreCase(detail, "system has not been booted with systemd") != null or
-        std.ascii.indexOfIgnoreCase(detail, "not found") != null or
         std.ascii.indexOfIgnoreCase(detail, "systemd user services are required") != null or
         std.ascii.indexOfIgnoreCase(detail, "no such file or directory") != null;
 }
@@ -270,9 +274,18 @@ fn runCaptureStatus(allocator: std.mem.Allocator, argv: []const []const u8) !Cap
         else => return err,
     };
 
-    const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch return error.CommandFailed;
+    const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch {
+        _ = child.kill() catch {};
+        _ = child.wait() catch {};
+        return error.CommandFailed;
+    };
     errdefer allocator.free(stdout);
-    const stderr = child.stderr.?.readToEndAlloc(allocator, 1024 * 1024) catch return error.CommandFailed;
+    const stderr = child.stderr.?.readToEndAlloc(allocator, 1024 * 1024) catch {
+        allocator.free(stdout);
+        _ = child.kill() catch {};
+        _ = child.wait() catch {};
+        return error.CommandFailed;
+    };
     errdefer allocator.free(stderr);
 
     const result = try child.wait();
@@ -330,8 +343,15 @@ fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
         },
         else => return err,
     };
-    const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
-    _ = try child.wait();
+    const stdout = child.stdout.?.readToEndAlloc(allocator, 1024 * 1024) catch {
+        _ = child.kill() catch {};
+        _ = child.wait() catch {};
+        return error.CommandFailed;
+    };
+    errdefer allocator.free(stdout);
+    _ = child.wait() catch {
+        return error.CommandFailed;
+    };
     return stdout;
 }
 
@@ -389,5 +409,6 @@ test "isSystemdUnavailableDetail detects common unavailable errors" {
     try std.testing.expect(isSystemdUnavailableDetail("Failed to connect to bus: No medium found"));
     try std.testing.expect(isSystemdUnavailableDetail("System has not been booted with systemd as init system"));
     try std.testing.expect(isSystemdUnavailableDetail("No such file or directory"));
+    try std.testing.expect(!isSystemdUnavailableDetail("unit nullclaw.service not found"));
     try std.testing.expect(!isSystemdUnavailableDetail("permission denied"));
 }
