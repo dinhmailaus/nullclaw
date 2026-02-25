@@ -621,7 +621,6 @@ fn printMemoryUsage() void {
         \\
         \\Commands:
         \\  stats                         Show resolved memory config and key counters
-        \\  doctor | status               Run deep memory diagnostics report
         \\  count                         Show total number of memory entries
         \\  reindex                       Rebuild vector index from primary memory
         \\  search <query> [--limit N]    Run runtime retrieval (keyword/hybrid)
@@ -702,17 +701,6 @@ fn runMemory(allocator: std.mem.Allocator, sub_args: []const []const u8) !void {
         } else {
             std.debug.print("  outbox_pending: n/a\n", .{});
         }
-        return;
-    }
-
-    if (std.mem.eql(u8, subcmd, "doctor") or std.mem.eql(u8, subcmd, "status")) {
-        const report = mem_rt.diagnose();
-        const text = yc.memory.formatDiagnosticReport(report, allocator) catch |err| {
-            std.debug.print("memory doctor formatting failed: {s}\n", .{@errorName(err)});
-            std.process.exit(1);
-        };
-        defer allocator.free(text);
-        std.debug.print("{s}\n", .{text});
         return;
     }
 
@@ -2085,7 +2073,7 @@ fn printUsage() void {
         \\  skills <list|install|remove> [ARGS]
         \\  hardware <discover|introspect|info> [ARGS]
         \\  migrate openclaw [--dry-run] [--source PATH]
-        \\  memory <stats|doctor|status|count|reindex|search|get|list|drain-outbox|forget> [ARGS]
+        \\  memory <stats|count|reindex|search|get|list|drain-outbox|forget> [ARGS]
         \\  models refresh
         \\  auth <login|status|logout> <provider> [--import-codex]
         \\  update [--check] [--yes]
