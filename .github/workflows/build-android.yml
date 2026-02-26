@@ -12,11 +12,11 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install Zig 0.15.2 manually
+      - name: Install Zig 0.15.2
         run: |
-          curl -LO https://ziglang.org/download/0.15.2/zig-linux-x86_64-0.15.2.tar.xz
-          tar -xf zig-linux-x86_64-0.15.2.tar.xz
-          echo "$PWD/zig-linux-x86_64-0.15.2" >> $GITHUB_PATH
+          curl -LO https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz
+          tar -xf zig-x86_64-linux-0.15.2.tar.xz
+          echo "$PWD/zig-x86_64-linux-0.15.2" >> $GITHUB_PATH
 
       - name: Verify Zig version
         run: zig version
