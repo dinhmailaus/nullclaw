@@ -21,7 +21,7 @@ const log = std.log.scoped(.multimodal);
 
 pub const MultimodalConfig = struct {
     max_images: u32 = 4,
-    max_image_size_bytes: u64 = 5_242_880, // 5 MB
+    max_image_size_bytes: usize = 5_242_880, // 5 MB
     /// Allow passing remote image URLs (`https://...`) through to providers.
     /// Disabled by default for secure-by-default behavior.
     allow_remote_fetch: bool = false,
@@ -187,7 +187,7 @@ pub fn readLocalImage(allocator: std.mem.Allocator, path: []const u8, config: Mu
     return readFromFile(allocator, file, config.max_image_size_bytes);
 }
 
-fn readFromFile(allocator: std.mem.Allocator, file: std.fs.File, max_size: u64) !ImageData {
+fn readFromFile(allocator: std.mem.Allocator, file: std.fs.File, max_size: usize) !ImageData {
     defer file.close();
 
     const stat = try file.stat();
@@ -225,7 +225,7 @@ fn isAllowedMimeType(mime: []const u8) bool {
 
 /// Parse and validate a data URI image marker.
 /// Returns the base64 payload and MIME type as borrowed slices of `source`.
-fn parseDataUriImage(source: []const u8, max_size_bytes: u64) !DataUriImage {
+fn parseDataUriImage(source: []const u8, max_size_bytes: usize) !DataUriImage {
     if (!std.mem.startsWith(u8, source, "data:")) return error.InvalidDataUri;
     const comma = std.mem.indexOfScalar(u8, source, ',') orelse return error.InvalidDataUri;
 
