@@ -7,13 +7,13 @@ const isPathSafe = @import("path_security.zig").isPathSafe;
 const isResolvedPathAllowed = @import("path_security.zig").isResolvedPathAllowed;
 
 /// Default maximum file size to read (10MB).
-const DEFAULT_MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+const DEFAULT_MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
 
 /// Read file contents with workspace path scoping.
 pub const FileReadTool = struct {
     workspace_dir: []const u8,
     allowed_paths: []const []const u8 = &.{},
-    max_file_size: u64 = DEFAULT_MAX_FILE_SIZE,
+    max_file_size: usize = DEFAULT_MAX_FILE_SIZE,
 
     pub const tool_name = "file_read";
     pub const tool_description = "Read the contents of a file in the workspace";
