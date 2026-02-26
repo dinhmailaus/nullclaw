@@ -12,10 +12,14 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Setup Zig 0.15.2
-        uses: mlugg/setup-zig@v1
-        with:
-          version: "0.15.2"
+      - name: Install Zig 0.15.2 manually
+        run: |
+          curl -LO https://ziglang.org/download/0.15.2/zig-linux-x86_64-0.15.2.tar.xz
+          tar -xf zig-linux-x86_64-0.15.2.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.15.2" >> $GITHUB_PATH
+
+      - name: Verify Zig version
+        run: zig version
 
       - name: Build for arm-linux-androideabi
         run: zig build -Doptimize=ReleaseSafe -Dtarget=arm-linux-androideabi -Dchannels=cli,telegram -j4
