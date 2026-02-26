@@ -1,0 +1,28 @@
+name: Build nullclaw for Android ARM
+
+on:
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+jobs:
+  build-android-arm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Zig 0.15.2
+        uses: mlugg/setup-zig@v1
+        with:
+          version: "0.15.2"
+
+      - name: Build for arm-linux-androideabi
+        run: zig build -Doptimize=ReleaseSafe -Dtarget=arm-linux-androideabi -Dchannels=cli,telegram -j4
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nullclaw-android-arm
+          path: zig-out/bin/nullclaw
+          retention-days: 7
