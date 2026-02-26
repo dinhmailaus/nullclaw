@@ -334,6 +334,60 @@ test "hotApplyConfigChange rejects malformed model primary" {
     try std.testing.expectEqualStrings("openrouter", dummy.default_provider);
 }
 
+test "hotApplyConfigChange model primary refreshes token and max token limits" {
+    const allocator = std.testing.allocator;
+    var dummy = struct {
+        allocator: std.mem.Allocator,
+        model_name: []const u8,
+        model_name_owned: bool,
+        default_provider: []const u8,
+        default_provider_owned: bool,
+        default_model: []const u8,
+        token_limit: u64,
+        token_limit_override: ?u64,
+        max_tokens: u32,
+        max_tokens_override: ?u32,
+    }{
+        .allocator = allocator,
+        .model_name = "old-model",
+        .model_name_owned = false,
+        .default_provider = "old-provider",
+        .default_provider_owned = false,
+        .default_model = "old-model",
+        .token_limit = 1024,
+        .token_limit_override = null,
+        .max_tokens = 128,
+        .max_tokens_override = null,
+    };
+    defer if (dummy.model_name_owned) allocator.free(dummy.model_name);
+    defer if (dummy.default_provider_owned) allocator.free(dummy.default_provider);
+
+    const applied = try hotApplyConfigChange(
+        &dummy,
+        .set,
+        "agents.defaults.model.primary",
+        "\"openrouter/gpt-4o\"",
+    );
+    try std.testing.expect(applied);
+    try std.testing.expectEqualStrings("gpt-4o", dummy.model_name);
+    try std.testing.expectEqualStrings("gpt-4o", dummy.default_model);
+    try std.testing.expectEqualStrings("openrouter", dummy.default_provider);
+    try std.testing.expectEqual(@as(u64, 128_000), dummy.token_limit);
+    try std.testing.expectEqual(@as(u32, 8192), dummy.max_tokens);
+}
+
+test "splitPrimaryModelRef parses provider model format" {
+    const parsed = splitPrimaryModelRef("openrouter/inception/mercury") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("openrouter", parsed.provider);
+    try std.testing.expectEqualStrings("inception/mercury", parsed.model);
+}
+
+test "splitPrimaryModelRef rejects malformed values" {
+    try std.testing.expect(splitPrimaryModelRef("noslash") == null);
+    try std.testing.expect(splitPrimaryModelRef("/model-only") == null);
+    try std.testing.expect(splitPrimaryModelRef("provider/") == null);
+}
+
 fn setExecNodeId(self: anytype, value: ?[]const u8) !void {
     if (self.exec_node_id_owned and self.exec_node_id != null) {
         self.allocator.free(self.exec_node_id.?);

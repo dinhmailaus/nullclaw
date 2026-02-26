@@ -2020,6 +2020,8 @@ test "memoryProfileForBackend maps common backends" {
     try std.testing.expectEqualStrings("markdown_only", memoryProfileForBackend("markdown"));
     try std.testing.expectEqualStrings("postgres_keyword", memoryProfileForBackend("postgres"));
     try std.testing.expectEqualStrings("minimal_none", memoryProfileForBackend("none"));
+    try std.testing.expectEqualStrings("custom", memoryProfileForBackend("api"));
+    try std.testing.expectEqualStrings("custom", memoryProfileForBackend("memory"));
     try std.testing.expectEqualStrings("custom", memoryProfileForBackend("redis"));
 }
 
